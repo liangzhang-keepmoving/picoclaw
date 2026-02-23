@@ -202,7 +202,6 @@ type TavilySearchProvider struct {
 	apiKey  string
 	baseURL string
 	proxy   string
-	client  *http.Client
 }
 
 func (p *TavilySearchProvider) Search(ctx context.Context, query string, count int) (string, error) {
@@ -234,7 +233,11 @@ func (p *TavilySearchProvider) Search(ctx context.Context, query string, count i
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", userAgent)
 
-	resp, err := p.client.Do(req)
+	client, err := createHTTPClient(p.proxy, searchTimeout)
+	if err != nil {
+		return "", fmt.Errorf("failed to create HTTP client: %w", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -487,15 +490,10 @@ func NewWebSearchTool(opts WebSearchToolOptions) (*WebSearchTool, error) {
 			maxResults = opts.BraveMaxResults
 		}
 	} else if opts.TavilyEnabled && opts.TavilyAPIKey != "" {
-		client, err := createHTTPClient(opts.Proxy, searchTimeout)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create HTTP client for Tavily: %w", err)
-		}
 		provider = &TavilySearchProvider{
 			apiKey:  opts.TavilyAPIKey,
 			baseURL: opts.TavilyBaseURL,
 			proxy:   opts.Proxy,
-			client:  client,
 		}
 		if opts.TavilyMaxResults > 0 {
 			maxResults = opts.TavilyMaxResults
