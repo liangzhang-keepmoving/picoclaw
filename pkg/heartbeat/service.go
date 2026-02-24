@@ -20,6 +20,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/state"
 	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
 const (
@@ -276,7 +277,7 @@ This file contains tasks for the heartbeat service to check periodically.
 Add your heartbeat tasks below this line:
 `
 
-	if err := os.WriteFile(heartbeatPath, []byte(defaultContent), 0o644); err != nil {
+	if err := utils.WriteFileAtomic(heartbeatPath, []byte(defaultContent), 0o644); err != nil {
 		hs.logErrorf("Failed to create default HEARTBEAT.md: %v", err)
 	} else {
 		hs.logInfof("Created default HEARTBEAT.md template")
