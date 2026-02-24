@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/utils"
+	"github.com/sipeed/picoclaw/pkg/fileutil"
 )
 
 // MemoryStore manages persistent memory for the agent.
@@ -107,7 +107,7 @@ func (ms *MemoryStore) ReadLongTerm() string {
 func (ms *MemoryStore) WriteLongTerm(content string) error {
 	// Use unified atomic write utility with explicit sync for flash storage reliability.
 	// Using 0o600 (owner read/write only) for secure default permissions.
-	if err := utils.WriteFileAtomic(ms.memoryFile, []byte(content), 0o600); err != nil {
+	if err := fileutil.WriteFileAtomic(ms.memoryFile, []byte(content), 0o600); err != nil {
 		return err
 	}
 
@@ -119,6 +119,9 @@ func (ms *MemoryStore) WriteLongTerm(content string) error {
 	}
 	ms.mu.Unlock()
 	return nil
+=======
+	return fileutil.WriteFileAtomic(ms.memoryFile, []byte(content), 0o600)
+>>>>>>> 11996f1 (refactor(pkg): move atomic file write to dedicated fileutil package)
 }
 
 // ReadToday reads today's daily note.
@@ -205,7 +208,7 @@ func (ms *MemoryStore) AppendToday(content string) error {
 	}
 
 	// Use unified atomic write utility with explicit sync for flash storage reliability.
-	if err := utils.WriteFileAtomic(todayFile, []byte(newContent), 0o600); err != nil {
+	if err := fileutil.WriteFileAtomic(todayFile, []byte(newContent), 0o600); err != nil {
 		return err
 	}
 
@@ -218,6 +221,9 @@ func (ms *MemoryStore) AppendToday(content string) error {
 	}
 	ms.mu.Unlock()
 	return nil
+=======
+	return fileutil.WriteFileAtomic(todayFile, []byte(newContent), 0o600)
+>>>>>>> 11996f1 (refactor(pkg): move atomic file write to dedicated fileutil package)
 }
 
 // GetRecentDailyNotes returns daily notes from the last N days.
