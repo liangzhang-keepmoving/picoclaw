@@ -89,7 +89,6 @@ var (
 		"footer":  regexp.MustCompile(`(?i)</footer>`),
 	}
 )
-
 // createHTTPClient creates an HTTP client with optional proxy support
 func createHTTPClient(proxyURL string, timeout time.Duration) (*http.Client, error) {
 	client := &http.Client{
@@ -134,7 +133,6 @@ type SearchProvider interface {
 type BraveSearchProvider struct {
 	apiKey string
 	proxy  string
-	client *http.Client
 }
 
 func (p *BraveSearchProvider) Search(ctx context.Context, query string, count int) (string, error) {
@@ -149,7 +147,11 @@ func (p *BraveSearchProvider) Search(ctx context.Context, query string, count in
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Subscription-Token", p.apiKey)
 
-	resp, err := p.client.Do(req)
+	client, err := createHTTPClient(p.proxy, 10*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("failed to create HTTP client: %w", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -280,8 +282,7 @@ func (p *TavilySearchProvider) Search(ctx context.Context, query string, count i
 }
 
 type DuckDuckGoSearchProvider struct {
-	proxy  string
-	client *http.Client
+	proxy string
 }
 
 func (p *DuckDuckGoSearchProvider) Search(ctx context.Context, query string, count int) (string, error) {
@@ -294,7 +295,11 @@ func (p *DuckDuckGoSearchProvider) Search(ctx context.Context, query string, cou
 
 	req.Header.Set("User-Agent", userAgent)
 
-	resp, err := p.client.Do(req)
+	client, err := createHTTPClient(p.proxy, 10*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("failed to create HTTP client: %w", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -373,7 +378,6 @@ func stripTags(content string) string {
 type PerplexitySearchProvider struct {
 	apiKey string
 	proxy  string
-	client *http.Client
 }
 
 func (p *PerplexitySearchProvider) Search(ctx context.Context, query string, count int) (string, error) {
@@ -408,7 +412,11 @@ func (p *PerplexitySearchProvider) Search(ctx context.Context, query string, cou
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
 	req.Header.Set("User-Agent", userAgent)
 
-	resp, err := p.client.Do(req)
+	client, err := createHTTPClient(p.proxy, 30*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("failed to create HTTP client: %w", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -469,20 +477,12 @@ func NewWebSearchTool(opts WebSearchToolOptions) (*WebSearchTool, error) {
 
 	// Priority: Perplexity > Brave > Tavily > DuckDuckGo
 	if opts.PerplexityEnabled && opts.PerplexityAPIKey != "" {
-		client, err := createHTTPClient(opts.Proxy, perplexityTimeout)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create HTTP client for Perplexity: %w", err)
-		}
-		provider = &PerplexitySearchProvider{apiKey: opts.PerplexityAPIKey, proxy: opts.Proxy, client: client}
+		provider = &PerplexitySearchProvider{apiKey: opts.PerplexityAPIKey, proxy: opts.Proxy}
 		if opts.PerplexityMaxResults > 0 {
 			maxResults = opts.PerplexityMaxResults
 		}
 	} else if opts.BraveEnabled && opts.BraveAPIKey != "" {
-		client, err := createHTTPClient(opts.Proxy, searchTimeout)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create HTTP client for Brave: %w", err)
-		}
-		provider = &BraveSearchProvider{apiKey: opts.BraveAPIKey, proxy: opts.Proxy, client: client}
+		provider = &BraveSearchProvider{apiKey: opts.BraveAPIKey, proxy: opts.Proxy}
 		if opts.BraveMaxResults > 0 {
 			maxResults = opts.BraveMaxResults
 		}
@@ -501,11 +501,7 @@ func NewWebSearchTool(opts WebSearchToolOptions) (*WebSearchTool, error) {
 			maxResults = opts.TavilyMaxResults
 		}
 	} else if opts.DuckDuckGoEnabled {
-		client, err := createHTTPClient(opts.Proxy, searchTimeout)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create HTTP client for DuckDuckGo: %w", err)
-		}
-		provider = &DuckDuckGoSearchProvider{proxy: opts.Proxy, client: client}
+		provider = &DuckDuckGoSearchProvider{proxy: opts.Proxy}
 		if opts.DuckDuckGoMaxResults > 0 {
 			maxResults = opts.DuckDuckGoMaxResults
 		}
@@ -573,7 +569,6 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]any) *ToolR
 type WebFetchTool struct {
 	maxChars        int
 	proxy           string
-	client          *http.Client
 	fetchLimitBytes int64
 }
 
@@ -606,6 +601,16 @@ func NewWebFetchToolWithProxy(maxChars int, proxy string, fetchLimitBytes int64)
 		client:          client,
 		fetchLimitBytes: fetchLimitBytes,
 	}, nil
+}
+
+func NewWebFetchToolWithProxy(maxChars int, proxy string) *WebFetchTool {
+	if maxChars <= 0 {
+		maxChars = 50000
+	}
+	return &WebFetchTool{
+		maxChars: maxChars,
+		proxy:    proxy,
+	}
 }
 
 func (t *WebFetchTool) Name() string {
@@ -662,7 +667,20 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
-	resp, err := t.client.Do(req)
+	client, err := createHTTPClient(t.proxy, 60*time.Second)
+	if err != nil {
+		return ErrorResult(fmt.Sprintf("failed to create HTTP client: %v", err))
+	}
+
+	// Configure redirect handling
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return fmt.Errorf("stopped after 5 redirects")
+		}
+		return nil
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("request failed: %v", err))
 	}
