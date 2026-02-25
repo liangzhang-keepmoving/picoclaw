@@ -31,9 +31,7 @@ builds:
       - loong64
       - arm
     goarm:
-      - "7"           
-      - "6"           
-      - "5"             
+      - "7"             
     main: ./cmd/picoclaw
     ignore:
       - goos: windows
