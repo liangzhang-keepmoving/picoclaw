@@ -722,6 +722,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 }
 
 func (t *WebFetchTool) extractText(htmlContent string) string {
+<<<<<<< HEAD
 	// First remove script and style tags
 	result := reScript.ReplaceAllLiteralString(htmlContent, "")
 	result = reStyle.ReplaceAllLiteralString(result, "")
@@ -731,13 +732,24 @@ func (t *WebFetchTool) extractText(htmlContent string) string {
 	
 	// Remove HTML tags but preserve structure
 	result = t.removeHTMLTags(result)
+=======
+	result := reScript.ReplaceAllLiteralString(htmlContent, "")
+	result = reStyle.ReplaceAllLiteralString(result, "")
+	result = reTags.ReplaceAllLiteralString(result, "")
+>>>>>>> 8a1fb03 (Perf/precompile regex (#687))
 
 	// Clean whitespace
 	result = strings.TrimSpace(result)
 	result = reWhitespace.ReplaceAllString(result, " ")
 	result = reBlankLines.ReplaceAllString(result, "\n\n")
 
+<<<<<<< HEAD
 	// Remove blank lines
+=======
+	result = reWhitespace.ReplaceAllString(result, " ")
+	result = reBlankLines.ReplaceAllString(result, "\n\n")
+
+>>>>>>> 8a1fb03 (Perf/precompile regex (#687))
 	lines := strings.Split(result, "\n")
 	var cleanLines []string
 	for _, line := range lines {
