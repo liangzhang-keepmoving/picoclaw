@@ -16,7 +16,8 @@ import (
 )
 
 const (
-	userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	userAgent          = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	MaxFetchLimitBytes = int64(10 * 1024 * 1024) // 10MB limit
 
 	// HTTP client timeouts for web tool providers.
 	searchTimeout     = 10 * time.Second // Brave, Tavily, DuckDuckGo
@@ -580,35 +581,19 @@ func NewWebFetchToolWithProxy(maxChars int, proxy string, fetchLimitBytes int64)
 	if maxChars <= 0 {
 		maxChars = defaultMaxChars
 	}
-	client, err := createHTTPClient(proxy, fetchTimeout)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP client for web fetch: %w", err)
-	}
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) >= maxRedirects {
-			return fmt.Errorf("stopped after %d redirects", maxRedirects)
-		}
-		return nil
-	}
 	if fetchLimitBytes <= 0 {
-		fetchLimitBytes = 10 * 1024 * 1024 // Security Fallback
+		fetchLimitBytes = MaxFetchLimitBytes // Security Fallback
 	}
 	return &WebFetchTool{
 		maxChars:        maxChars,
 		proxy:           proxy,
-		client:          client,
 		fetchLimitBytes: fetchLimitBytes,
 	}, nil
 }
 
 func NewWebFetchToolWithProxy(maxChars int, proxy string) *WebFetchTool {
-	if maxChars <= 0 {
-		maxChars = 50000
-	}
-	return &WebFetchTool{
-		maxChars: maxChars,
-		proxy:    proxy,
-	}
+	tool, _ := NewWebFetchToolWithProxy(maxChars, proxy, MaxFetchLimitBytes)
+	return tool
 }
 
 func (t *WebFetchTool) Name() string {
@@ -683,7 +668,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 		return ErrorResult(fmt.Sprintf("request failed: %v", err))
 	}
 
-	resp.Body = http.MaxBytesReader(nil, resp.Body, t.fetchLimitBytes)
+	resp.Body = http.MaxBytesReader(nil, resp.Body, MaxFetchLimitBytes)
 
 	defer resp.Body.Close()
 
@@ -695,7 +680,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
-			return ErrorResult(fmt.Sprintf("failed to read response: size exceeded %d bytes limit", t.fetchLimitBytes))
+			return ErrorResult(fmt.Sprintf("failed to read response: size exceeded %d bytes limit", MaxFetchLimitBytes))
 		}
 		return ErrorResult(fmt.Sprintf("failed to read response: %v", err))
 	}
