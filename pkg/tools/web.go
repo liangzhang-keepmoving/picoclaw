@@ -16,6 +16,7 @@ import (
 )
 
 const (
+<<<<<<< HEAD
 	userAgent          = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 	MaxFetchLimitBytes = int64(10 * 1024 * 1024) // 10MB limit
 
@@ -26,6 +27,9 @@ const (
 
 	defaultMaxChars = 50000
 	maxRedirects    = 5
+=======
+	userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+>>>>>>> b88e590 (moved fetch limit bytes in config file)
 )
 
 // Pre-compiled regexes for HTML text extraction
@@ -571,13 +575,20 @@ type WebFetchTool struct {
 	fetchLimitBytes int64
 }
 
-func NewWebFetchTool(maxChars int) *WebFetchTool {
-	// createHTTPClient cannot fail with an empty proxy string.
-	tool, _ := NewWebFetchToolWithProxy(maxChars, "", 10*1024*1024)
-	return tool
+func NewWebFetchTool(maxChars int, fetchLimitBytes int64) *WebFetchTool {
+	if maxChars <= 0 {
+		maxChars = defaultMaxChars
+	}
+	if fetchLimitBytes <= 0 {
+		fetchLimitBytes = MaxFetchLimitBytes // Security Fallback
+	}
+	return &WebFetchTool{
+		maxChars:        maxChars,
+		fetchLimitBytes: fetchLimitBytes,
+	}
 }
 
-func NewWebFetchToolWithProxy(maxChars int, proxy string, fetchLimitBytes int64) (*WebFetchTool, error) {
+func NewWebFetchToolWithProxy(maxChars int, proxy string, fetchLimitBytes int64) *WebFetchTool {
 	if maxChars <= 0 {
 		maxChars = defaultMaxChars
 	}
@@ -588,12 +599,7 @@ func NewWebFetchToolWithProxy(maxChars int, proxy string, fetchLimitBytes int64)
 		maxChars:        maxChars,
 		proxy:           proxy,
 		fetchLimitBytes: fetchLimitBytes,
-	}, nil
-}
-
-func NewWebFetchToolWithProxy(maxChars int, proxy string) *WebFetchTool {
-	tool, _ := NewWebFetchToolWithProxy(maxChars, proxy, MaxFetchLimitBytes)
-	return tool
+	}
 }
 
 func (t *WebFetchTool) Name() string {
@@ -668,7 +674,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 		return ErrorResult(fmt.Sprintf("request failed: %v", err))
 	}
 
-	resp.Body = http.MaxBytesReader(nil, resp.Body, MaxFetchLimitBytes)
+	resp.Body = http.MaxBytesReader(nil, resp.Body, t.fetchLimitBytes)
 
 	defer resp.Body.Close()
 
@@ -680,7 +686,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
-			return ErrorResult(fmt.Sprintf("failed to read response: size exceeded %d bytes limit", MaxFetchLimitBytes))
+			return ErrorResult(fmt.Sprintf("failed to read response: size exceeded %d bytes limit", t.fetchLimitBytes))
 		}
 		return ErrorResult(fmt.Sprintf("failed to read response: %v", err))
 	}
