@@ -23,7 +23,7 @@ func TestWebTool_WebFetch_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := NewWebFetchTool(50000, testFetchLimit)
+	tool := NewWebFetchTool(50000)
 	ctx := context.Background()
 	args := map[string]any{
 		"url": server.URL,
@@ -59,7 +59,7 @@ func TestWebTool_WebFetch_JSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := NewWebFetchTool(50000, testFetchLimit)
+	tool := NewWebFetchTool(50000)
 	ctx := context.Background()
 	args := map[string]any{
 		"url": server.URL,
@@ -80,7 +80,7 @@ func TestWebTool_WebFetch_JSON(t *testing.T) {
 
 // TestWebTool_WebFetch_InvalidURL verifies error handling for invalid URL
 func TestWebTool_WebFetch_InvalidURL(t *testing.T) {
-	tool := NewWebFetchTool(50000, testFetchLimit)
+	tool := NewWebFetchTool(50000)
 	ctx := context.Background()
 	args := map[string]any{
 		"url": "not-a-valid-url",
@@ -101,7 +101,7 @@ func TestWebTool_WebFetch_InvalidURL(t *testing.T) {
 
 // TestWebTool_WebFetch_UnsupportedScheme verifies error handling for non-http URLs
 func TestWebTool_WebFetch_UnsupportedScheme(t *testing.T) {
-	tool := NewWebFetchTool(50000, testFetchLimit)
+	tool := NewWebFetchTool(50000)
 	ctx := context.Background()
 	args := map[string]any{
 		"url": "ftp://example.com/file.txt",
@@ -122,7 +122,7 @@ func TestWebTool_WebFetch_UnsupportedScheme(t *testing.T) {
 
 // TestWebTool_WebFetch_MissingURL verifies error handling for missing URL
 func TestWebTool_WebFetch_MissingURL(t *testing.T) {
-	tool := NewWebFetchTool(50000, testFetchLimit)
+	tool := NewWebFetchTool(50000)
 	ctx := context.Background()
 	args := map[string]any{}
 
@@ -150,7 +150,7 @@ func TestWebTool_WebFetch_Truncation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := NewWebFetchTool(1000, testFetchLimit) // Limit to 1000 chars
+	tool := NewWebFetchTool(1000) // Limit to 1000 chars
 	ctx := context.Background()
 	args := map[string]any{
 		"url": server.URL,
@@ -194,7 +194,7 @@ func TestWebFetchTool_PayloadTooLarge(t *testing.T) {
 	defer ts.Close()
 
 	// Initialize the tool
-	tool := NewWebFetchTool(50000, testFetchLimit)
+	tool := NewWebFetchTool(50000)
 
 	// Prepare the arguments pointing to the URL of our local mock server
 	args := map[string]any{
@@ -220,13 +220,19 @@ func TestWebFetchTool_PayloadTooLarge(t *testing.T) {
 
 // TestWebTool_WebSearch_NoApiKey verifies that no tool is created when API key is missing
 func TestWebTool_WebSearch_NoApiKey(t *testing.T) {
-	tool := NewWebSearchTool(WebSearchToolOptions{BraveEnabled: true, BraveAPIKey: ""})
+	tool, err := NewWebSearchTool(WebSearchToolOptions{BraveEnabled: true, BraveAPIKey: ""})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 	if tool != nil {
 		t.Errorf("Expected nil tool when Brave API key is empty")
 	}
 
 	// Also nil when nothing is enabled
-	tool = NewWebSearchTool(WebSearchToolOptions{})
+	tool, err = NewWebSearchTool(WebSearchToolOptions{})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 	if tool != nil {
 		t.Errorf("Expected nil tool when no provider is enabled")
 	}
@@ -234,7 +240,10 @@ func TestWebTool_WebSearch_NoApiKey(t *testing.T) {
 
 // TestWebTool_WebSearch_MissingQuery verifies error handling for missing query
 func TestWebTool_WebSearch_MissingQuery(t *testing.T) {
-	tool := NewWebSearchTool(WebSearchToolOptions{BraveEnabled: true, BraveAPIKey: "test-key", BraveMaxResults: 5})
+	tool, err := NewWebSearchTool(WebSearchToolOptions{BraveEnabled: true, BraveAPIKey: "test-key", BraveMaxResults: 5})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 	ctx := context.Background()
 	args := map[string]any{}
 
@@ -259,7 +268,7 @@ func TestWebTool_WebFetch_HTMLExtraction(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := NewWebFetchTool(50000, testFetchLimit)
+	tool := NewWebFetchTool(50000)
 	ctx := context.Background()
 	args := map[string]any{
 		"url": server.URL,
@@ -360,7 +369,7 @@ func TestWebFetchTool_extractText(t *testing.T) {
 
 // TestWebTool_WebFetch_MissingDomain verifies error handling for URL without domain
 func TestWebTool_WebFetch_MissingDomain(t *testing.T) {
-	tool := NewWebFetchTool(50000, testFetchLimit)
+	tool := NewWebFetchTool(50000)
 	ctx := context.Background()
 	args := map[string]any{
 		"url": "https://",
@@ -482,7 +491,10 @@ func TestCreateHTTPClient_ProxyFromEnvironmentWhenConfigEmpty(t *testing.T) {
 }
 
 func TestNewWebFetchToolWithProxy(t *testing.T) {
-	tool := NewWebFetchToolWithProxy(1024, "http://127.0.0.1:7890", testFetchLimit)
+	tool, err := NewWebFetchToolWithProxy(1024, "http://127.0.0.1:7890", testFetchLimit)
+	if err != nil {
+		t.Fatalf("NewWebFetchToolWithProxy() error: %v", err)
+	}
 	if tool.maxChars != 1024 {
 		t.Fatalf("maxChars = %d, want %d", tool.maxChars, 1024)
 	}
@@ -490,7 +502,10 @@ func TestNewWebFetchToolWithProxy(t *testing.T) {
 		t.Fatalf("proxy = %q, want %q", tool.proxy, "http://127.0.0.1:7890")
 	}
 
-	tool = NewWebFetchToolWithProxy(0, "http://127.0.0.1:7890", testFetchLimit)
+	tool, err = NewWebFetchToolWithProxy(0, "http://127.0.0.1:7890", testFetchLimit)
+	if err != nil {
+		t.Fatalf("NewWebFetchToolWithProxy() error: %v", err)
+	}
 	if tool.maxChars != 50000 {
 		t.Fatalf("default maxChars = %d, want %d", tool.maxChars, 50000)
 	}
@@ -498,12 +513,15 @@ func TestNewWebFetchToolWithProxy(t *testing.T) {
 
 func TestNewWebSearchTool_PropagatesProxy(t *testing.T) {
 	t.Run("perplexity", func(t *testing.T) {
-		tool := NewWebSearchTool(WebSearchToolOptions{
+		tool, err := NewWebSearchTool(WebSearchToolOptions{
 			PerplexityEnabled:    true,
 			PerplexityAPIKey:     "k",
 			PerplexityMaxResults: 3,
 			Proxy:                "http://127.0.0.1:7890",
 		})
+		if err != nil {
+			t.Fatalf("NewWebSearchTool() error: %v", err)
+		}
 		p, ok := tool.provider.(*PerplexitySearchProvider)
 		if !ok {
 			t.Fatalf("provider type = %T, want *PerplexitySearchProvider", tool.provider)
@@ -514,12 +532,15 @@ func TestNewWebSearchTool_PropagatesProxy(t *testing.T) {
 	})
 
 	t.Run("brave", func(t *testing.T) {
-		tool := NewWebSearchTool(WebSearchToolOptions{
+		tool, err := NewWebSearchTool(WebSearchToolOptions{
 			BraveEnabled:    true,
 			BraveAPIKey:     "k",
 			BraveMaxResults: 3,
 			Proxy:           "http://127.0.0.1:7890",
 		})
+		if err != nil {
+			t.Fatalf("NewWebSearchTool() error: %v", err)
+		}
 		p, ok := tool.provider.(*BraveSearchProvider)
 		if !ok {
 			t.Fatalf("provider type = %T, want *BraveSearchProvider", tool.provider)
@@ -530,11 +551,14 @@ func TestNewWebSearchTool_PropagatesProxy(t *testing.T) {
 	})
 
 	t.Run("duckduckgo", func(t *testing.T) {
-		tool := NewWebSearchTool(WebSearchToolOptions{
+		tool, err := NewWebSearchTool(WebSearchToolOptions{
 			DuckDuckGoEnabled:    true,
 			DuckDuckGoMaxResults: 3,
 			Proxy:                "http://127.0.0.1:7890",
 		})
+		if err != nil {
+			t.Fatalf("NewWebSearchTool() error: %v", err)
+		}
 		p, ok := tool.provider.(*DuckDuckGoSearchProvider)
 		if !ok {
 			t.Fatalf("provider type = %T, want *DuckDuckGoSearchProvider", tool.provider)
@@ -586,12 +610,15 @@ func TestWebTool_TavilySearch_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := NewWebSearchTool(WebSearchToolOptions{
+	tool, err := NewWebSearchTool(WebSearchToolOptions{
 		TavilyEnabled:    true,
 		TavilyAPIKey:     "test-key",
 		TavilyBaseURL:    server.URL,
 		TavilyMaxResults: 5,
 	})
+	if err != nil {
+		t.Fatalf("NewWebSearchTool() error: %v", err)
+	}
 
 	ctx := context.Background()
 	args := map[string]any{
