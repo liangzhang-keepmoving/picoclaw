@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -15,7 +16,115 @@ import (
 
 const (
 	userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+	// HTTP client timeouts for web tool providers.
+	searchTimeout     = 10 * time.Second // Brave, Tavily, DuckDuckGo
+	perplexityTimeout = 30 * time.Second // Perplexity (LLM-based, slower)
+	fetchTimeout      = 60 * time.Second // WebFetchTool
+
+	defaultMaxChars = 50000
+	maxRedirects    = 5
 )
+
+// Pre-compiled regexes for HTML text extraction
+var (
+	reScript     = regexp.MustCompile(`<script[\s\S]*?</script>`)
+	reStyle      = regexp.MustCompile(`<style[\s\S]*?</style>`)
+	reTags       = regexp.MustCompile(`<[^>]+>`)
+	reWhitespace = regexp.MustCompile(`[^\S\n]+`)
+	reBlankLines = regexp.MustCompile(`\n{3,}`)
+
+	// DuckDuckGo result extraction
+	reDDGLink    = regexp.MustCompile(`<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>`)
+	reDDGSnippet = regexp.MustCompile(`<a class="result__snippet[^"]*"[^>]*>([\s\S]*?)</a>`)
+
+	// Block tags for HTML structure preservation
+	reBlockTags = map[string]*regexp.Regexp{
+		"div":     regexp.MustCompile(`(?i)<div[^>]*>`),
+		"p":       regexp.MustCompile(`(?i)<p[^>]*>`),
+		"h1":      regexp.MustCompile(`(?i)<h1[^>]*>`),
+		"h2":      regexp.MustCompile(`(?i)<h2[^>]*>`),
+		"h3":      regexp.MustCompile(`(?i)<h3[^>]*>`),
+		"h4":      regexp.MustCompile(`(?i)<h4[^>]*>`),
+		"h5":      regexp.MustCompile(`(?i)<h5[^>]*>`),
+		"h6":      regexp.MustCompile(`(?i)<h6[^>]*>`),
+		"ul":      regexp.MustCompile(`(?i)<ul[^>]*>`),
+		"ol":      regexp.MustCompile(`(?i)<ol[^>]*>`),
+		"li":      regexp.MustCompile(`(?i)<li[^>]*>`),
+		"table":   regexp.MustCompile(`(?i)<table[^>]*>`),
+		"tr":      regexp.MustCompile(`(?i)<tr[^>]*>`),
+		"td":      regexp.MustCompile(`(?i)<td[^>]*>`),
+		"th":      regexp.MustCompile(`(?i)<th[^>]*>`),
+		"blockquote": regexp.MustCompile(`(?i)<blockquote[^>]*>`),
+		"pre":     regexp.MustCompile(`(?i)<pre[^>]*>`),
+		"section": regexp.MustCompile(`(?i)<section[^>]*>`),
+		"article": regexp.MustCompile(`(?i)<article[^>]*>`),
+		"header":  regexp.MustCompile(`(?i)<header[^>]*>`),
+		"footer":  regexp.MustCompile(`(?i)<footer[^>]*>`),
+	}
+
+	// Closing block tags
+	reClosingBlockTags = map[string]*regexp.Regexp{
+		"div":     regexp.MustCompile(`(?i)</div>`),
+		"p":       regexp.MustCompile(`(?i)</p>`),
+		"h1":      regexp.MustCompile(`(?i)</h1>`),
+		"h2":      regexp.MustCompile(`(?i)</h2>`),
+		"h3":      regexp.MustCompile(`(?i)</h3>`),
+		"h4":      regexp.MustCompile(`(?i)</h4>`),
+		"h5":      regexp.MustCompile(`(?i)</h5>`),
+		"h6":      regexp.MustCompile(`(?i)</h6>`),
+		"ul":      regexp.MustCompile(`(?i)</ul>`),
+		"ol":      regexp.MustCompile(`(?i)</ol>`),
+		"li":      regexp.MustCompile(`(?i)</li>`),
+		"table":   regexp.MustCompile(`(?i)</table>`),
+		"tr":      regexp.MustCompile(`(?i)</tr>`),
+		"td":      regexp.MustCompile(`(?i)</td>`),
+		"th":      regexp.MustCompile(`(?i)</th>`),
+		"blockquote": regexp.MustCompile(`(?i)</blockquote>`),
+		"pre":     regexp.MustCompile(`(?i)</pre>`),
+		"section": regexp.MustCompile(`(?i)</section>`),
+		"article": regexp.MustCompile(`(?i)</article>`),
+		"header":  regexp.MustCompile(`(?i)</header>`),
+		"footer":  regexp.MustCompile(`(?i)</footer>`),
+	}
+)
+
+// createHTTPClient creates an HTTP client with optional proxy support
+func createHTTPClient(proxyURL string, timeout time.Duration) (*http.Client, error) {
+	client := &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			MaxIdleConns:        10,
+			IdleConnTimeout:     30 * time.Second,
+			DisableCompression:  false,
+			TLSHandshakeTimeout: 15 * time.Second,
+		},
+	}
+
+	if proxyURL != "" {
+		proxy, err := url.Parse(proxyURL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid proxy URL: %w", err)
+		}
+		scheme := strings.ToLower(proxy.Scheme)
+		switch scheme {
+		case "http", "https", "socks5", "socks5h":
+		default:
+			return nil, fmt.Errorf(
+				"unsupported proxy scheme %q (supported: http, https, socks5, socks5h)",
+				proxy.Scheme,
+			)
+		}
+		if proxy.Host == "" {
+			return nil, fmt.Errorf("invalid proxy URL: missing host")
+		}
+		client.Transport.(*http.Transport).Proxy = http.ProxyURL(proxy)
+	} else {
+		client.Transport.(*http.Transport).Proxy = http.ProxyFromEnvironment
+	}
+
+	return client, nil
+}
 
 type SearchProvider interface {
 	Search(ctx context.Context, query string, count int) (string, error)
@@ -23,6 +132,8 @@ type SearchProvider interface {
 
 type BraveSearchProvider struct {
 	apiKey string
+	proxy  string
+	client *http.Client
 }
 
 func (p *BraveSearchProvider) Search(ctx context.Context, query string, count int) (string, error) {
@@ -37,8 +148,7 @@ func (p *BraveSearchProvider) Search(ctx context.Context, query string, count in
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Subscription-Token", p.apiKey)
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := p.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -88,6 +198,8 @@ func (p *BraveSearchProvider) Search(ctx context.Context, query string, count in
 type TavilySearchProvider struct {
 	apiKey  string
 	baseURL string
+	proxy   string
+	client  *http.Client
 }
 
 func (p *TavilySearchProvider) Search(ctx context.Context, query string, count int) (string, error) {
@@ -102,7 +214,7 @@ func (p *TavilySearchProvider) Search(ctx context.Context, query string, count i
 		"search_depth":        "advanced",
 		"include_answer":      false,
 		"include_images":      false,
-		"include_raw_content": "false",
+		"include_raw_content": false,
 		"max_results":         count,
 	}
 
@@ -119,8 +231,7 @@ func (p *TavilySearchProvider) Search(ctx context.Context, query string, count i
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", userAgent)
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := p.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -167,7 +278,10 @@ func (p *TavilySearchProvider) Search(ctx context.Context, query string, count i
 	return strings.Join(lines, "\n"), nil
 }
 
-type DuckDuckGoSearchProvider struct{}
+type DuckDuckGoSearchProvider struct {
+	proxy  string
+	client *http.Client
+}
 
 func (p *DuckDuckGoSearchProvider) Search(ctx context.Context, query string, count int) (string, error) {
 	searchURL := fmt.Sprintf("https://html.duckduckgo.com/html/?q=%s", url.QueryEscape(query))
@@ -179,8 +293,7 @@ func (p *DuckDuckGoSearchProvider) Search(ctx context.Context, query string, cou
 
 	req.Header.Set("User-Agent", userAgent)
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := p.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -201,8 +314,7 @@ func (p *DuckDuckGoSearchProvider) extractResults(html string, count int, query 
 	// Try finding the result links directly first, as they are the most critical
 	// Pattern: <a class="result__a" href="...">Title</a>
 	// The previous regex was a bit strict. Let's make it more flexible for attributes order/content
-	reLink := regexp.MustCompile(`<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>`)
-	matches := reLink.FindAllStringSubmatch(html, count+5)
+	matches := reDDGLink.FindAllStringSubmatch(html, count+5)
 
 	if len(matches) == 0 {
 		return fmt.Sprintf("No results found or extraction failed. Query: %s", query), nil
@@ -219,12 +331,11 @@ func (p *DuckDuckGoSearchProvider) extractResults(html string, count int, query 
 
 	// A better regex approach: iterate through text and find matches in order
 	// But for now, let's grab all snippets too
-	reSnippet := regexp.MustCompile(`<a class="result__snippet[^"]*".*?>([\s\S]*?)</a>`)
-	snippetMatches := reSnippet.FindAllStringSubmatch(html, count+5)
+	snippetMatches := reDDGSnippet.FindAllStringSubmatch(html, count+5)
 
 	maxItems := min(len(matches), count)
 
-	for i := 0; i < maxItems; i++ {
+	for i := range maxItems {
 		urlStr := matches[i][1]
 		title := stripTags(matches[i][2])
 		title = strings.TrimSpace(title)
@@ -232,9 +343,9 @@ func (p *DuckDuckGoSearchProvider) extractResults(html string, count int, query 
 		// URL decoding if needed
 		if strings.Contains(urlStr, "uddg=") {
 			if u, err := url.QueryUnescape(urlStr); err == nil {
-				idx := strings.Index(u, "uddg=")
-				if idx != -1 {
-					urlStr = u[idx+5:]
+				_, after, ok := strings.Cut(u, "uddg=")
+				if ok {
+					urlStr = after
 				}
 			}
 		}
@@ -255,12 +366,13 @@ func (p *DuckDuckGoSearchProvider) extractResults(html string, count int, query 
 }
 
 func stripTags(content string) string {
-	re := regexp.MustCompile(`<[^>]+>`)
-	return re.ReplaceAllString(content, "")
+	return reTags.ReplaceAllString(content, "")
 }
 
 type PerplexitySearchProvider struct {
 	apiKey string
+	proxy  string
+	client *http.Client
 }
 
 func (p *PerplexitySearchProvider) Search(ctx context.Context, query string, count int) (string, error) {
@@ -295,8 +407,7 @@ func (p *PerplexitySearchProvider) Search(ctx context.Context, query string, cou
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
 	req.Header.Set("User-Agent", userAgent)
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := p.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -348,44 +459,63 @@ type WebSearchToolOptions struct {
 	PerplexityAPIKey     string
 	PerplexityMaxResults int
 	PerplexityEnabled    bool
+	Proxy                string
 }
 
-func NewWebSearchTool(opts WebSearchToolOptions) *WebSearchTool {
+func NewWebSearchTool(opts WebSearchToolOptions) (*WebSearchTool, error) {
 	var provider SearchProvider
 	maxResults := 5
 
 	// Priority: Perplexity > Brave > Tavily > DuckDuckGo
 	if opts.PerplexityEnabled && opts.PerplexityAPIKey != "" {
-		provider = &PerplexitySearchProvider{apiKey: opts.PerplexityAPIKey}
+		client, err := createHTTPClient(opts.Proxy, perplexityTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create HTTP client for Perplexity: %w", err)
+		}
+		provider = &PerplexitySearchProvider{apiKey: opts.PerplexityAPIKey, proxy: opts.Proxy, client: client}
 		if opts.PerplexityMaxResults > 0 {
 			maxResults = opts.PerplexityMaxResults
 		}
 	} else if opts.BraveEnabled && opts.BraveAPIKey != "" {
-		provider = &BraveSearchProvider{apiKey: opts.BraveAPIKey}
+		client, err := createHTTPClient(opts.Proxy, searchTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create HTTP client for Brave: %w", err)
+		}
+		provider = &BraveSearchProvider{apiKey: opts.BraveAPIKey, proxy: opts.Proxy, client: client}
 		if opts.BraveMaxResults > 0 {
 			maxResults = opts.BraveMaxResults
 		}
 	} else if opts.TavilyEnabled && opts.TavilyAPIKey != "" {
+		client, err := createHTTPClient(opts.Proxy, searchTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create HTTP client for Tavily: %w", err)
+		}
 		provider = &TavilySearchProvider{
 			apiKey:  opts.TavilyAPIKey,
 			baseURL: opts.TavilyBaseURL,
+			proxy:   opts.Proxy,
+			client:  client,
 		}
 		if opts.TavilyMaxResults > 0 {
 			maxResults = opts.TavilyMaxResults
 		}
 	} else if opts.DuckDuckGoEnabled {
-		provider = &DuckDuckGoSearchProvider{}
+		client, err := createHTTPClient(opts.Proxy, searchTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create HTTP client for DuckDuckGo: %w", err)
+		}
+		provider = &DuckDuckGoSearchProvider{proxy: opts.Proxy, client: client}
 		if opts.DuckDuckGoMaxResults > 0 {
 			maxResults = opts.DuckDuckGoMaxResults
 		}
 	} else {
-		return nil
+		return nil, nil
 	}
 
 	return &WebSearchTool{
 		provider:   provider,
 		maxResults: maxResults,
-	}
+	}, nil
 }
 
 func (t *WebSearchTool) Name() string {
@@ -441,15 +571,35 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]any) *ToolR
 
 type WebFetchTool struct {
 	maxChars int
+	proxy    string
+	client   *http.Client
 }
 
 func NewWebFetchTool(maxChars int) *WebFetchTool {
+	// createHTTPClient cannot fail with an empty proxy string.
+	tool, _ := NewWebFetchToolWithProxy(maxChars, "")
+	return tool
+}
+
+func NewWebFetchToolWithProxy(maxChars int, proxy string) (*WebFetchTool, error) {
 	if maxChars <= 0 {
-		maxChars = 50000
+		maxChars = defaultMaxChars
+	}
+	client, err := createHTTPClient(proxy, fetchTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP client for web fetch: %w", err)
+	}
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= maxRedirects {
+			return fmt.Errorf("stopped after %d redirects", maxRedirects)
+		}
+		return nil
 	}
 	return &WebFetchTool{
 		maxChars: maxChars,
-	}
+		proxy:    proxy,
+		client:   client,
+	}, nil
 }
 
 func (t *WebFetchTool) Name() string {
@@ -470,8 +620,9 @@ func (t *WebFetchTool) Parameters() map[string]any {
 			},
 			"maxChars": map[string]any{
 				"type":        "integer",
-				"description": "Maximum characters to extract",
-				"minimum":     100.0,
+				"description": "Maximum number of characters to return (default: 50000)",
+				"minimum":     1.0,
+				"maximum":     100000.0,
 			},
 		},
 		"required": []string{"url"},
@@ -484,137 +635,77 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 		return ErrorResult("url is required")
 	}
 
-	parsedURL, err := url.Parse(urlStr)
-	if err != nil {
-		return ErrorResult(fmt.Sprintf("invalid URL: %v", err))
-	}
-
-	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return ErrorResult("only http/https URLs are allowed")
-	}
-
-	if parsedURL.Host == "" {
-		return ErrorResult("missing domain in URL")
-	}
-
 	maxChars := t.maxChars
 	if mc, ok := args["maxChars"].(float64); ok {
-		if int(mc) > 100 {
+		if int(mc) > 0 && int(mc) <= 100000 {
 			maxChars = int(mc)
 		}
 	}
 
+	// Validate URL
+	if _, err := url.Parse(urlStr); err != nil {
+		return ErrorResult(fmt.Sprintf("invalid URL: %v", err))
+	}
+
+	// Fetch URL
 	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("failed to create request: %v", err))
 	}
 
 	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
-	client := &http.Client{
-		Timeout: 60 * time.Second,
-		Transport: &http.Transport{
-			MaxIdleConns:        10,
-			IdleConnTimeout:     30 * time.Second,
-			DisableCompression:  false,
-			TLSHandshakeTimeout: 15 * time.Second,
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return fmt.Errorf("stopped after 5 redirects")
-			}
-			return nil
-		},
-	}
-
-	resp, err := client.Do(req)
+	resp, err := t.client.Do(req)
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("request failed: %v", err))
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return ErrorResult(fmt.Sprintf("HTTP error: %d %s", resp.StatusCode, resp.Status))
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("failed to read response: %v", err))
 	}
 
-	contentType := resp.Header.Get("Content-Type")
+	htmlContent := string(body)
+	extractedText := t.extractText(htmlContent)
 
-	var text, extractor string
-
-	if strings.Contains(contentType, "application/json") {
-		var jsonData any
-		if err := json.Unmarshal(body, &jsonData); err == nil {
-			formatted, _ := json.MarshalIndent(jsonData, "", "  ")
-			text = string(formatted)
-			extractor = "json"
-		} else {
-			text = string(body)
-			extractor = "raw"
-		}
-	} else if strings.Contains(contentType, "text/html") || len(body) > 0 &&
-		(strings.HasPrefix(string(body), "<!DOCTYPE") || strings.HasPrefix(strings.ToLower(string(body)), "<html")) {
-		text = t.extractText(string(body))
-		extractor = "text"
-	} else {
-		text = string(body)
-		extractor = "raw"
+	// Truncate if necessary
+	if len(extractedText) > maxChars {
+		extractedText = extractedText[:maxChars] + "... (truncated)"
 	}
-
-	truncated := len(text) > maxChars
-	if truncated {
-		text = text[:maxChars]
-	}
-
-	result := map[string]any{
-		"url":       urlStr,
-		"status":    resp.StatusCode,
-		"extractor": extractor,
-		"truncated": truncated,
-		"length":    len(text),
-		"text":      text,
-	}
-
-	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 
 	return &ToolResult{
-		ForLLM: fmt.Sprintf(
-			"Fetched %d bytes from %s (extractor: %s, truncated: %v)",
-			len(text),
-			urlStr,
-			extractor,
-			truncated,
-		),
-		ForUser: string(resultJSON),
+		ForLLM:  extractedText,
+		ForUser: extractedText,
 	}
 }
 
 func (t *WebFetchTool) extractText(htmlContent string) string {
-	// 首先移除 script 和 style 标签
-	re := regexp.MustCompile(`<script[\s\S]*?</script>`)
-	result := re.ReplaceAllLiteralString(htmlContent, "")
-	re = regexp.MustCompile(`<style[\s\S]*?</style>`)
-	result = re.ReplaceAllLiteralString(result, "")
+	// First remove script and style tags
+	result := reScript.ReplaceAllLiteralString(htmlContent, "")
+	result = reStyle.ReplaceAllLiteralString(result, "")
 	
-	// 处理 HTML 实体
-	result = t.decodeHTMLEntities(result)
+	// Decode HTML entities using standard library
+	result = html.UnescapeString(result)
 	
-	// 移除 HTML 标签，但保留一些结构信息
+	// Remove HTML tags but preserve structure
 	result = t.removeHTMLTags(result)
 
-	// 清理空白字符
+	// Clean whitespace
 	result = strings.TrimSpace(result)
-	re = regexp.MustCompile(`[^\S\n]+`)
-	result = re.ReplaceAllString(result, " ")
-	re = regexp.MustCompile(`\n{3,}`)
-	result = re.ReplaceAllString(result, "\n\n")
+	result = reWhitespace.ReplaceAllString(result, " ")
+	result = reBlankLines.ReplaceAllString(result, "\n\n")
 
-	// 移除空行
+	// Remove blank lines
 	lines := strings.Split(result, "\n")
 	var cleanLines []string
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
+		if strings.TrimSpace(line) != "" {
 			cleanLines = append(cleanLines, line)
 		}
 	}
@@ -622,44 +713,20 @@ func (t *WebFetchTool) extractText(htmlContent string) string {
 	return strings.Join(cleanLines, "\n")
 }
 
-// decodeHTMLEntities 解码常见的 HTML 实体
-func (t *WebFetchTool) decodeHTMLEntities(s string) string {
-	entities := map[string]string{
-		"&amp;":  "&",
-		"&lt;":   "<",
-		"&gt;":   ">",
-		"&quot;": "\"",
-		"&#39;":  "'",
-		"&nbsp;": " ",
-		"&copy;": "©",
-		"&reg;":  "®",
-		"&trade;": "™",
-	}
-	
-	for entity, char := range entities {
-		s = strings.ReplaceAll(s, entity, char)
-	}
-	
-	return s
-}
-
-// removeHTMLTags 移除 HTML 标签，但尽量保留内容结构
+// removeHTMLTags removes HTML tags but preserves content structure
 func (t *WebFetchTool) removeHTMLTags(s string) string {
-	// 对于块级元素，在移除前添加换行符，以保留结构
-	blockTags := []string{"div", "p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "table", "tr", "td", "th", "blockquote", "pre", "section", "article", "header", "footer"}
-	
-	for _, tag := range blockTags {
-		// 匹配开始标签
-		re := regexp.MustCompile(`<` + tag + `[^>]*>`)
-		s = re.ReplaceAllString(s, "\n")
-		// 匹配结束标签
-		re = regexp.MustCompile(`</` + tag + `>`)
-		s = re.ReplaceAllString(s, "\n")
+	// For block-level elements, add newline before removing to preserve structure
+	for _, regex := range reBlockTags {
+		s = regex.ReplaceAllString(s, "\n")
 	}
 	
-	// 移除所有剩余的 HTML 标签
-	re = regexp.MustCompile(`<[^>]+>`)
-	s = re.ReplaceAllLiteralString(s, "")
+	// Also handle closing block tags
+	for _, regex := range reClosingBlockTags {
+		s = regex.ReplaceAllString(s, "\n")
+	}
+	
+	// Remove all remaining HTML tags
+	s = reTags.ReplaceAllLiteralString(s, "")
 	
 	return s
 }

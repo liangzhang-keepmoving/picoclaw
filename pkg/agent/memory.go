@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/fileutil"
 )
 
 // MemoryStore manages persistent memory for the agent.
@@ -103,7 +105,9 @@ func (ms *MemoryStore) ReadLongTerm() string {
 // WriteLongTerm writes content to the long-term memory file (MEMORY.md).
 // Also updates the in-memory cache.
 func (ms *MemoryStore) WriteLongTerm(content string) error {
-	if err := os.WriteFile(ms.memoryFile, []byte(content), 0o644); err != nil {
+	// Use unified atomic write utility with explicit sync for flash storage reliability.
+	// Using 0o600 (owner read/write only) for secure default permissions.
+	if err := fileutil.WriteFileAtomic(ms.memoryFile, []byte(content), 0o600); err != nil {
 		return err
 	}
 
@@ -170,7 +174,9 @@ func (ms *MemoryStore) AppendToday(content string) error {
 
 	// Ensure month directory exists
 	monthDir := filepath.Dir(todayFile)
-	os.MkdirAll(monthDir, 0o755)
+	if err := os.MkdirAll(monthDir, 0o755); err != nil {
+		return err
+	}
 
 	// Get existing content from cache or file
 	var existingContent string
@@ -198,7 +204,8 @@ func (ms *MemoryStore) AppendToday(content string) error {
 		newContent = existingContent + "\n" + content
 	}
 
-	if err := os.WriteFile(todayFile, []byte(newContent), 0o644); err != nil {
+	// Use unified atomic write utility with explicit sync for flash storage reliability.
+	if err := fileutil.WriteFileAtomic(todayFile, []byte(newContent), 0o600); err != nil {
 		return err
 	}
 
@@ -219,7 +226,7 @@ func (ms *MemoryStore) GetRecentDailyNotes(days int) string {
 	var sb strings.Builder
 	first := true
 
-	for i := 0; i < days; i++ {
+	for i := range days {
 		date := time.Now().AddDate(0, 0, -i)
 		dateStr := date.Format("20060102") // YYYYMMDD
 		monthDir := dateStr[:6]            // YYYYMM
