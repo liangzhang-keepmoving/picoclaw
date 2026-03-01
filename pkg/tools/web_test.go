@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 const testFetchLimit = int64(10 * 1024 * 1024)
@@ -164,17 +166,13 @@ func TestWebTool_WebFetch_Truncation(t *testing.T) {
 	}
 
 	// ForLLM should contain truncated content (not the full 20000 chars)
-	resultMap := make(map[string]any)
-	json.Unmarshal([]byte(result.ForLLM), &resultMap)
-	if text, ok := resultMap["text"].(string); ok {
-		if len(text) > 1100 { // Allow some margin
-			t.Errorf("Expected content to be truncated to ~1000 chars, got: %d", len(text))
-		}
+	if len(result.ForLLM) > 1100 { // Allow some margin
+		t.Errorf("Expected content to be truncated to ~1000 chars, got: %d", len(result.ForLLM))
 	}
 
-	// Should be marked as truncated
-	if truncated, ok := resultMap["truncated"].(bool); !ok || !truncated {
-		t.Errorf("Expected 'truncated' to be true in result")
+	// Should be marked as truncated in ForUser
+	if !strings.Contains(result.ForUser, "truncated: true") {
+		t.Errorf("Expected 'truncated: true' in ForUser")
 	}
 }
 
@@ -498,6 +496,7 @@ func TestNewWebFetchToolWithProxy(t *testing.T) {
 	if tool.maxChars != 1024 {
 		t.Fatalf("maxChars = %d, want %d", tool.maxChars, 1024)
 	}
+
 	if tool.proxy != "http://127.0.0.1:7890" {
 		t.Fatalf("proxy = %q, want %q", tool.proxy, "http://127.0.0.1:7890")
 	}

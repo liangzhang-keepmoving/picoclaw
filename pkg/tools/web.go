@@ -583,6 +583,11 @@ func NewWebFetchTool(maxChars int) *WebFetchTool {
 	return tool
 }
 
+func NewWebFetchToolWithLimit(maxChars int, fetchLimitBytes int64) (*WebFetchTool, error) {
+	// createHTTPClient cannot fail with an empty proxy string.
+	return NewWebFetchToolWithProxy(maxChars, "", fetchLimitBytes)
+}
+
 func NewWebFetchToolWithProxy(maxChars int, proxy string, fetchLimitBytes int64) (*WebFetchTool, error) {
 	if maxChars <= 0 {
 		maxChars = defaultMaxChars
