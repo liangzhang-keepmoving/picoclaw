@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -36,7 +37,7 @@ var (
 
 	// DuckDuckGo result extraction
 	reDDGLink    = regexp.MustCompile(`<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>`)
-	reDDGSnippet = regexp.MustCompile(`<a class="result__snippet[^"]*"[^>]*>([\s\S]*?)</a>`)
+	reDDGSnippet = regexp.MustCompile(`<a class="result__snippet[^"]*".*?>([\s\S]*?)</a>`)
 
 	// Block tags for HTML structure preservation
 	reBlockTags = map[string]*regexp.Regexp{
@@ -570,18 +571,19 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]any) *ToolR
 }
 
 type WebFetchTool struct {
-	maxChars int
-	proxy    string
-	client   *http.Client
+	maxChars        int
+	proxy           string
+	client          *http.Client
+	fetchLimitBytes int64
 }
 
 func NewWebFetchTool(maxChars int) *WebFetchTool {
 	// createHTTPClient cannot fail with an empty proxy string.
-	tool, _ := NewWebFetchToolWithProxy(maxChars, "")
+	tool, _ := NewWebFetchToolWithProxy(maxChars, "", 10*1024*1024)
 	return tool
 }
 
-func NewWebFetchToolWithProxy(maxChars int, proxy string) (*WebFetchTool, error) {
+func NewWebFetchToolWithProxy(maxChars int, proxy string, fetchLimitBytes int64) (*WebFetchTool, error) {
 	if maxChars <= 0 {
 		maxChars = defaultMaxChars
 	}
@@ -595,10 +597,14 @@ func NewWebFetchToolWithProxy(maxChars int, proxy string) (*WebFetchTool, error)
 		}
 		return nil
 	}
+	if fetchLimitBytes <= 0 {
+		fetchLimitBytes = 10 * 1024 * 1024 // Security Fallback
+	}
 	return &WebFetchTool{
-		maxChars: maxChars,
-		proxy:    proxy,
-		client:   client,
+		maxChars:        maxChars,
+		proxy:           proxy,
+		client:          client,
+		fetchLimitBytes: fetchLimitBytes,
 	}, nil
 }
 
@@ -660,6 +666,9 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("request failed: %v", err))
 	}
+
+	resp.Body = http.MaxBytesReader(nil, resp.Body, t.fetchLimitBytes)
+
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -668,6 +677,10 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return ErrorResult(fmt.Sprintf("failed to read response: size exceeded %d bytes limit", t.fetchLimitBytes))
+		}
 		return ErrorResult(fmt.Sprintf("failed to read response: %v", err))
 	}
 
@@ -675,13 +688,20 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 	extractedText := t.extractText(htmlContent)
 
 	// Truncate if necessary
+	truncated := false
 	if len(extractedText) > maxChars {
 		extractedText = extractedText[:maxChars] + "... (truncated)"
+		truncated = true
 	}
 
 	return &ToolResult{
 		ForLLM:  extractedText,
-		ForUser: extractedText,
+		ForUser: fmt.Sprintf(
+			"Fetched %d bytes from %s (extractor: html, truncated: %v)",
+			len(body),
+			urlStr,
+			truncated,
+		),
 	}
 }
 
